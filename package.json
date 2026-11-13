@@ -1,0 +1,230 @@
+{
+  "name": "overlord-vscode",
+  "displayName": "Overlord: VS Code Session Status",
+  "description": "A live board of your Claude Code terminal sessions: expandable cards with live activity, the latest message, model + context usage, sound + pop-up alerts when a session needs you, one-click jump to the exact terminal, and a new-session launcher. Flags sessions that typed you a question or asked for a go-ahead (which Agent View reports as idle).",
+  "version": "2.1.8",
+  "publisher": "jana81000",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/jkahn24/overlord-vscode.git"
+  },
+  "homepage": "https://github.com/JanaToskovic/overlord-vscode#readme",
+  "bugs": {
+    "url": "https://github.com/JanaToskovic/overlord-vscode/issues"
+  },
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "keywords": [
+    "claude",
+    "claude code",
+    "terminal",
+    "agents",
+    "sessions",
+    "notifications",
+    "status bar"
+  ],
+  "icon": "media/icon.png",
+  "main": "./extension.js",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "overlord",
+          "title": "Overlord",
+          "icon": "media/eye.svg"
+        }
+      ]
+    },
+    "views": {
+      "overlord": [
+        {
+          "id": "overlord.board",
+          "name": "Sessions",
+          "type": "webview"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "overlord.refresh",
+        "title": "Overlord: Refresh Now"
+      },
+      {
+        "command": "overlord.newSession",
+        "title": "Overlord: New YOLO Session"
+      },
+      {
+        "command": "overlord.toggleSound",
+        "title": "Overlord: Toggle Sound On/Off"
+      },
+      {
+        "command": "overlord.newAgentSession",
+        "title": "Overlord: New Session in the Selected Agent"
+      }
+    ],
+    "configuration": {
+      "title": "Overlord",
+      "properties": {
+        "overlord.colors.needs": {
+          "type": "string",
+          "default": "",
+          "description": "Override the 'needs you' state color (any CSS color). Empty = theme red."
+        },
+        "overlord.colors.working": {
+          "type": "string",
+          "default": "",
+          "description": "Override the 'working' state color. Empty = theme yellow."
+        },
+        "overlord.colors.done": {
+          "type": "string",
+          "default": "",
+          "description": "Override the 'done' state color. Empty = theme green."
+        },
+        "overlord.colors.idle": {
+          "type": "string",
+          "default": "",
+          "description": "Override the 'idle' state color. Empty = theme grey."
+        },
+        "overlord.openOnStartup": {
+          "type": "boolean",
+          "default": true,
+          "description": "Reveal the Overlord board (in whichever side bar it lives) automatically when the window opens."
+        },
+        "overlord.claudePath": {
+          "type": "string",
+          "default": "claude",
+          "description": "Command used to run the Claude Code CLI. Leave as 'claude' if it's on your PATH, or set the full path to the binary."
+        },
+        "overlord.pollMs": {
+          "type": "number",
+          "default": 2500,
+          "description": "How often (milliseconds) to poll `claude agents --json`. Each poll spawns the CLI (~0.5s), so lower values cost more CPU."
+        },
+        "overlord.taskRegistry": {
+          "type": "string",
+          "default": "",
+          "description": "Root folder of Claude Code's native task lists. The per-session TASKS panel reads from here. Leave empty for the default (~/.claude/tasks)."
+        },
+        "overlord.planGateFile": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the plan-gate flag file (per-session opt-outs, written by the Stop-hook gate and the board toggle). Sessions opted out show '⛔ plan off' on the TASKS panel."
+        },
+        "overlord.sound": {
+          "type": "boolean",
+          "default": true,
+          "description": "Play a soft notification sound when a session needs you."
+        },
+        "overlord.notifications": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show a pop-up when a session needs you or finishes."
+        },
+        "overlord.osToast": {
+          "type": "boolean",
+          "default": true,
+          "description": "Master switch for Windows OS-level toasts (via ~/.claude/hooks/claude-notify.ps1), so you're alerted even when Cursor is in the background. Covers both 'needs you' and 'finished'. Windows only."
+        },
+        "overlord.osToastInput": {
+          "type": "boolean",
+          "default": true,
+          "description": "Include 'needs you' in the OS toasts. Turn this off if Claude Code's own Notification hook already toasts that event (it does by default) and you only want Overlord's 'finished' toast — otherwise you get two toasts for the same thing. Requires overlord.osToast."
+        },
+        "overlord.doneFlashSeconds": {
+          "type": "number",
+          "default": 12,
+          "description": "Deprecated (no longer used). 'Done' is the manually-parked state (right-click → Move to done)."
+        },
+        "overlord.doneAfterMinutes": {
+          "type": "number",
+          "default": 15,
+          "description": "Deprecated (no longer used as of 2026-07-15). Idle sessions no longer auto-move to Done — a card only reaches the Done tab when you right-click it and choose 'Move to done'."
+        },
+        "overlord.maskFinishedTurns": {
+          "type": "boolean",
+          "default": true,
+          "description": "Claude Code reports 'busy' for a session whose turn is over but which still holds a background shell or subagent, so 'working' cards can sit finished for minutes. When on, Overlord checks the transcript for the turn-end marker and moves those to Idle (or Needs you) with a 'bg' chip, keeping the Working tab to sessions the model is actually generating for. Turn off to show only Claude Code's native status."
+        },
+        "overlord.detectTypedQuestions": {
+          "type": "boolean",
+          "default": true,
+          "description": "Claude Code reports 'idle' both when a session finishes and when it ends its turn on a typed question. When on, Overlord peeks the transcript's last message and shows 'needs you' if it's a question. Turn off to show only Claude Code's native status."
+        },
+        "overlord.judgeWithHaiku": {
+          "type": "boolean",
+          "default": true,
+          "description": "When a session ends its turn and the built-in phrase rules find nothing, ask Haiku (via your own `claude` CLI login) whether it is actually waiting on you — and get the reply buttons from the same call. Phrase-rule hits are never overridden, and any CLI failure falls back to them, so this can only add cards to 'Needs you', never remove one. Turn off to use the phrase rules alone.",
+          "markdownDescription": "When a session ends its turn and the built-in phrase rules find nothing, ask Haiku (via your own `claude` CLI login) whether it is actually waiting on you — and get the reply buttons from the same call. Phrase-rule hits are never overridden, and any CLI failure falls back to them, so this can only add cards to *Needs you*, never remove one. Turn off to use the phrase rules alone."
+        },
+        "overlord.judgeModel": {
+          "type": "string",
+          "default": "claude-haiku-4-5-20251001",
+          "description": "Model used to judge whether a finished session is waiting on you. Called directly over your existing Claude Code login (~1-4s); the `claude -p` CLI is only the fallback, and it takes 35s+ because it ships its whole system prompt and tool schemas for what is a one-line classification."
+        },
+        "overlord.simplifyModel": {
+          "type": "string",
+          "default": "claude-haiku-4-5-20251001",
+          "description": "Model behind a card's 'Simplify' button. Translating finished work into plain language is a fast job, so this is the cheap tier (~2s)."
+        },
+        "overlord.adviseModel": {
+          "type": "string",
+          "default": "claude-sonnet-5",
+          "description": "Model behind a card's 'Next step' button. Ranking what actually matters next is judgment rather than translation, so this is a stronger tier than Simplify (~5-6s). Measured 2026-08-06: switching this to Haiku makes the button SLOWER, not faster — the cost is the transcript digest and the thinking, not the model tier."
+        },
+        "overlord.newSessionCommand": {
+          "type": "string",
+          "default": "claude",
+          "description": "Command run in the terminal when you click '+ New session' (e.g. 'claude', 'claude --resume')."
+        },
+        "overlord.device.enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Opt-in. Serve the session grid to an Overlord hardware screen on your network (starts a local TCP server + discovery beacon). Leave off unless you have the companion screen."
+        },
+        "overlord.device.port": {
+          "type": "number",
+          "default": 7331,
+          "description": "TCP port the Overlord screen connects to."
+        },
+        "overlord.usage.refreshSeconds": {
+          "type": "number",
+          "default": 180,
+          "description": "How often (seconds, min 60) Overlord refreshes the footer usage card from Claude's /usage endpoint (5-hour + weekly plan limits)."
+        },
+        "overlord.usage.warnBelowPercent": {
+          "type": "number",
+          "default": 15,
+          "description": "When any limit window drops below this % remaining, the usage card's ✳ logo turns red (amber at double this value) to warn you before you hit a wall."
+        },
+        "overlord.usage.billingIntervalMonths": {
+          "type": "number",
+          "default": 1,
+          "description": "Billing cadence for the blue 'Renews' bar. 1 = monthly, 12 = annual. The next-charge date is projected from your subscription start date on this interval."
+        },
+        "overlord.usage.renewsAt": {
+          "type": "string",
+          "default": "",
+          "description": "Optional: pin the next-charge date for the 'Renews' bar (e.g. '2026-08-02'). Leave blank to auto-project from your subscription start date."
+        },
+        "overlord.resumeContinuePrompt": {
+          "type": "string",
+          "default": "",
+          "description": "Prompt sent when you resume a CUT OFF card, so it picks its work back up without being told. Empty = use the built-in prompt. Set to \"off\" to resume at an empty prompt instead. Any other text replaces the built-in prompt."
+        }
+      }
+    }
+  },
+  "__metadata": {
+    "installedTimestamp": 1783413561441,
+    "targetPlatform": "undefined",
+    "size": 140997
+  }
+}
