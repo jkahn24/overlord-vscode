@@ -194,25 +194,10 @@
           "default": 7331,
           "description": "TCP port the Overlord screen connects to."
         },
-        "overlord.usage.refreshSeconds": {
-          "type": "number",
-          "default": 180,
-          "description": "How often (seconds, min 60) Overlord refreshes the footer usage card from Claude's /usage endpoint (5-hour + weekly plan limits)."
-        },
         "overlord.usage.warnBelowPercent": {
           "type": "number",
           "default": 15,
-          "description": "When any limit window drops below this % remaining, the usage card's ✳ logo turns red (amber at double this value) to warn you before you hit a wall."
-        },
-        "overlord.usage.billingIntervalMonths": {
-          "type": "number",
-          "default": 1,
-          "description": "Billing cadence for the blue 'Renews' bar. 1 = monthly, 12 = annual. The next-charge date is projected from your subscription start date on this interval."
-        },
-        "overlord.usage.renewsAt": {
-          "type": "string",
-          "default": "",
-          "description": "Optional: pin the next-charge date for the 'Renews' bar (e.g. '2026-08-02'). Leave blank to auto-project from your subscription start date."
+          "description": "When any limit window drops below this % remaining, the Codex usage card's logo turns red (amber at double this value) to warn you before you hit a wall."
         },
         "overlord.resumeContinuePrompt": {
           "type": "string",

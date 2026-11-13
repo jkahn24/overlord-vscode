@@ -29,7 +29,8 @@ needed every day until the board told me, at a glance, where my attention should
   and caps so old sessions don't pile up
 - **Concept search** over the board (optional, uses Claude Haiku)
 - **Topic icons** on each card from its title
-- **Usage bar** with your plan's remaining allowance and reset time
+- **Codex usage bar** with the plan's remaining allowance and reset time, read
+  from Codex's local session files
 - **Memory bar** for the machine, with the biggest apps
 - **Jump and reply**: click a card to focus its terminal, or send text to it
 - **Hand off** button for long sessions (optional, needs your own handoff script)
@@ -69,12 +70,10 @@ Two environment variables are optional:
 
 Overlord reads Claude Code's local files (session transcripts and the login in
 `~/.claude/.credentials.json`) on your machine. It uses that login only to call
-Anthropic's own API at `api.anthropic.com`, for two things:
-
-1. showing your plan usage and profile in the usage bar,
-2. short Haiku calls that judge whether a session needs you, summarise cards,
-   rank search results and pick topic icons (these send card titles and recent
-   session text to Anthropic).
+Anthropic's Messages API at `api.anthropic.com`, for short Haiku calls that
+judge whether a session needs you, summarise cards, rank search results and
+pick topic icons (these send card titles and recent session text to Anthropic).
+It does not read your plan usage, subscription or profile.
 
 The token is never sent to any other host.
 

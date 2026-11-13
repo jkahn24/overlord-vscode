@@ -162,10 +162,6 @@ let gState = null;             // ExtensionContext.globalState (set in activate)
 let activeAgent = "claude";     // which half of the board toggle is showing; the
                                 // new-session shortcut launches this agent's CLI
 let activeSid = null;           // sid whose terminal is currently focused (selected card)
-let usageStat = null;           // {plan, rows:[{label,leftPct,severity,resetsAt,group}]} last /usage fetch
-let usageAt = 0;                // ms of last usage fetch (throttle)
-let usageBusy = false;          // a usage fetch + transcript scan is running (patch 89)
-let subCreatedAt = null;        // subscription_created_at (from /profile) — for the renewal bar
 
 function cfg() { return vscode.workspace.getConfiguration("overlord"); }
 
@@ -2974,8 +2970,8 @@ async function replyThenReload(session, msg, all) {
 //                                                           system prompt + tool schemas
 //                                                           shipped to classify 4 words)
 //   direct Messages API, same prompt ............ 1.3-4.0s  (408 input tokens)
-// So the API is the primary transport and the CLI is the fallback. Same OAuth token
-// the usage card already uses (readOauth, ~/.claude/.credentials.json, kept fresh by
+// So the API is the primary transport and the CLI is the fallback. OAuth token
+// read by readOauth ( ~/.claude/.credentials.json, kept fresh by
 // Claude Code itself); the token carries a `user:inference` scope, and the Claude Code
 // system prompt is required for OAuth-authenticated calls.
 const askCache = new Map();   // sid -> {key, pending, ask, buttons}
@@ -3735,7 +3731,6 @@ async function refresh() {
     seeded = true;
 
     resolveTermNames(sessions);
-    maybeUpdateUsage();   // fire-and-forget; internally throttled to ~3 min
   } finally {
     polling = false;
   }
@@ -3989,8 +3984,6 @@ class OverlordViewProvider {
           }), 1000);
         });
       });
-      // Manual refresh of the usage card: drop the throttle and re-fetch now.
-      else if (msg.type === "refreshUsage") { usageAt = 0; maybeUpdateUsage(); }
       // Concept search: rank the live board by the query's intent (Haiku helper).
       else if (msg.type === "search") {
         const q = String(msg.q || "").trim();
@@ -4045,7 +4038,7 @@ class OverlordViewProvider {
   post(sessions, error) {
     _lastBoard = sessions;
     if (this._view) this._view.webview.postMessage({ type: "sessions", sessions: sessions.map(withPr), error: error || null,
-      errorCmd: error ? agentsCmd() : "", pinned, activeSid, usage: usageStat, codexUsage: codexUsage() });
+      errorCmd: error ? agentsCmd() : "", pinned, activeSid, codexUsage: codexUsage() });
   }
   html() {
     // Semantic state tokens: user override (overlord.colors.*) -> VS Code theme
@@ -4445,10 +4438,9 @@ class OverlordViewProvider {
        border-radius:2px;background:var(--acc)}
   .ag.claude{--acc:#d97757}
   .ag.codex{--acc:#10a37f}
-  /* Usage card: a compact sticky card at the foot of the panel mirroring Claude's
-     own /usage — one row per limit window (5-hour, Weekly, Weekly per model) with
-     a "% left" bar + reset time. Live from /api/oauth/usage. green >=50% left ->
-     amber >=20% -> red. */
+  /* Usage card: a compact sticky card at the foot of the panel — Codex's plan
+     limits (read from its local rollouts) with a "% left" bar + reset time, and the
+     machine memory bar. green >=50% left -> amber >=20% -> red. */
   #usage{flex:0 0 auto;display:none;margin:6px;padding:9px 11px 10px;
        border-radius:10px;font-variant-numeric:tabular-nums;
        background:var(--vscode-editorWidget-background,var(--vscode-sideBar-background,#252526));
@@ -4460,12 +4452,10 @@ class OverlordViewProvider {
   #usage .uhead b{font-size:12.5px;font-weight:700}
   #usage .uplan{font-size:10px;font-weight:600;padding:1px 7px;border-radius:10px;
        background:var(--vscode-badge-background,#4d4d4d);color:var(--vscode-badge-foreground,#fff)}
-  /* Top-right freshness cue: "updated 2m ago ⟳", click to force a re-fetch. Turns
-     amber then red if syncs start failing (stale token / offline) so a held-over
-     reading never masquerades as live. */
-  #usage .uage{margin-left:auto;font-size:9px;white-space:nowrap;cursor:pointer;
+  /* Top-right freshness cue: "updated 2m ago". Turns amber then red as the
+     reading ages, so a held-over reading never masquerades as live. */
+  #usage .uage{margin-left:auto;font-size:9px;white-space:nowrap;
        color:var(--vscode-descriptionForeground);opacity:.75}
-  #usage .uage:hover{opacity:1;text-decoration:underline}
   #usage .uage.stale{color:var(--ov-working);opacity:1}
   #usage .uage.stale2{color:var(--ov-needs);opacity:1}
   /* Collapse caret + folded one-line summary. */
@@ -4481,28 +4471,11 @@ class OverlordViewProvider {
   #usage .ubadge.u-ok{background:var(--ov-use-ok)}
   #usage .ubadge.u-low{background:var(--ov-use-low)}
   #usage .ubadge.u-crit{background:var(--ov-warn)}
-  #usage .ubadge.g-today{background:color-mix(in srgb,var(--ov-working) 62%,#ffffff)}
-  #usage .ubadge.g-renew{background:var(--vscode-charts-blue,#4aa3df)}
   /* #2 Low-limit attention: tint the logo when the worst window runs low. */
   #usage.codex .ulogo{color:#10a37f}
   #usage.warnlow .ulogo{color:var(--ov-use-low)}
   #usage.critlow .ulogo{color:var(--ov-warn)}
   #usage.critlow{border-color:color-mix(in srgb,var(--ov-warn) 55%,var(--vscode-panel-border,#555))}
-  /* "Today" bar: today's spend vs a sustainable daily pace, in a lighter
-     YELLOW (RED past 100% — today alone is on track to blow the weekly limit
-     before reset). Sits directly under the Weekly row (no divider). */
-  #usage .utoday{margin-top:8px}
-  #usage .utfc{font-size:9.5px;margin-top:3px;color:var(--vscode-descriptionForeground)}
-  #usage .utfc.over{color:var(--ov-warn)}
-  #usage .utline{display:flex;align-items:baseline;gap:6px;margin-bottom:3px}
-  #usage .utlabel{font-size:11px;font-weight:600}
-  #usage .utval{font-size:9.5px;color:var(--vscode-descriptionForeground);margin-left:auto}
-  #usage .utoday.utover .utval{color:var(--ov-warn)}
-  #usage .utbar{height:4px;border-radius:2px;overflow:hidden;
-       background:var(--vscode-input-background,rgba(128,128,128,.22))}
-  #usage .utfill{height:100%;border-radius:2px;
-       background:color-mix(in srgb,var(--ov-working) 60%,#ffffff)}
-  #usage .utoday.utover .utfill{background:var(--ov-warn)}
   #usage .urow{margin-top:8px}
   #usage .urow:first-child{margin-top:0}
   #usage .urline{display:flex;align-items:baseline;gap:6px;margin-bottom:3px}
@@ -4521,12 +4494,13 @@ class OverlordViewProvider {
        transition:width .4s ease}
   #usage .urow.u-low .urfill{background:var(--ov-use-low)}
   #usage .urow.u-crit .urfill{background:var(--ov-warn)}
-  /* Renewal (next charge) bar — blue; fill = fraction of the billing cycle left. */
-  #usage .urow.renew .urfill{background:var(--vscode-charts-blue,#4aa3df)}
   /* Live memory bar — fill = RAM in use; amber under 25% free, red under 10%. */
   #usage .umem{display:none}
   #usage .umem.on{display:block}
   #usage.collapsed .umem{display:none}
+  /* No meter for this half (Claude): the card shows only the memory bar. */
+  #usage.memonly .uhead,#usage.memonly .usum,#usage.memonly .urows{display:none}
+  #usage.memonly .umem.on{display:block}
   #usage .umem{cursor:pointer}
   #usage .umemhint{font-size:9.5px;color:var(--vscode-descriptionForeground);margin-top:3px}
   #usage .umemhint:empty{display:none}
@@ -4632,7 +4606,7 @@ class OverlordViewProvider {
 </div></div>
 <div id="root" role="list" aria-label="Sessions"><div class="empty">Looking for Claude Code sessions…</div></div>
 <button id="nAbove" class="nmk" style="display:none"></button><button id="nBelow" class="nmk" style="display:none"></button>
-<div id="usage"><div class="uhead"><span class="ulogo">✳</span><b>Claude</b><span class="uplan"></span><span class="uage" id="uage" title="When the usage card last synced — click to refresh now"></span><span class="ucaret" id="ucaret" title="Collapse / expand">▾</span></div><div class="usum" id="usum"></div><div class="urows"></div><div class="urow umem" id="umem"><div class="urline"><span class="urlabel">Memory</span><span class="urreset"></span><span class="urpct"><b></b>used</span></div><div class="urbar"><div class="urfill"></div></div><div class="umemhint"></div><div class="umemtop"></div></div></div>
+<div id="usage"><div class="uhead"><span class="ulogo">✳</span><b>Claude</b><span class="uplan"></span><span class="uage" id="uage" title="When the usage card last synced"></span><span class="ucaret" id="ucaret" title="Collapse / expand">▾</span></div><div class="usum" id="usum"></div><div class="urows"></div><div class="urow umem" id="umem"><div class="urline"><span class="urlabel">Memory</span><span class="urreset"></span><span class="urpct"><b></b>used</span></div><div class="urbar"><div class="urfill"></div></div><div class="umemhint"></div><div class="umemtop"></div></div></div>
 <script>
   const api = acquireVsCodeApi();
   // State-filter tabs: click a tab to show only sessions in that state; the eye
@@ -5813,13 +5787,11 @@ class OverlordViewProvider {
     if(!usageAtMs){ el.textContent=""; return; }
     const age=Date.now()-usageAtMs, s=Math.round(age/1000);
     const txt = s<60 ? s+"s" : s<3600 ? Math.round(s/60)+"m" : Math.floor(s/3600)+"h";
-    el.textContent="updated "+txt+" ago ⟳";
+    el.textContent="updated "+txt+" ago";
     el.classList.toggle("stale", age>=480000 && age<1200000);   // 8–20 min: amber
     el.classList.toggle("stale2", age>=1200000);                // 20 min+: red
   }
   setInterval(function(){ paintAge(); paintCountdowns(); }, 20000);
-  (function(){ const el=document.getElementById("uage");
-    if(el) el.onclick=()=>{ el.textContent="checking…"; api.postMessage({type:"refreshUsage"}); }; })();
   // #5 Collapse: fold the card to its one-line summary. Patch 85: folded by default,
   // open while a limit is critical. A manual toggle is saved with the critical state
   // it was made under and holds until that state flips, so a fold made on a calm card
@@ -5837,8 +5809,6 @@ class OverlordViewProvider {
     if(c) c.onclick=()=>{ const el=document.getElementById("usage");
       saveState({uFold:{folded:!el.classList.contains("collapsed"),crit:uCrit}}); applyCollapsed(); }; })();
   applyCollapsed();
-  function fmtTok(n){ n=n||0; if(n>=1e6) return (n/1e6).toFixed(n>=1e7?0:1)+"M";
-                      if(n>=1e3) return Math.round(n/1e3)+"k"; return ""+n; }
   let lastUsageKey="";
   // Live memory bar: its own row after the usage rows, plus a pill when folded.
   let lastMem=null;
@@ -5889,18 +5859,19 @@ class OverlordViewProvider {
   }
   (function(){ const r=document.getElementById("umem");
     if(r) r.onclick=()=>{ memOpen=!memOpen; if(memOpen){ paintMemTop(); api.postMessage({type:"memTop"}); } paintMem(); }; })();
-  // Patch 84: each half's own meter -- Claude's /usage card, Codex's rate limits.
+  // Patch 84: each half's own meter -- Codex's rate limits; the Claude half has none,
+  // so its card shows only the memory bar.
   const usageBy={claude:null,codex:null};
   function showUsage(){
     const u=usageBy[agent];
     if(u) return renderUsage(u);
-    const el=document.getElementById("usage"); if(el) el.classList.remove("on"); lastUsageKey="";
+    const el=document.getElementById("usage"); if(el) el.classList.add("on","memonly"); lastUsageKey="";
   }
   function renderUsage(u){
     const el=document.getElementById("usage"); if(!el||!u||!u.rows) return;
     usageAtMs=u.at||0;
     const key=JSON.stringify(u); if(key===lastUsageKey){ paintAge(); return; } lastUsageKey=key;
-    el.classList.add("on");
+    el.classList.add("on"); el.classList.remove("memonly");
     uCrit=u.rows.some(r=>uTier(Math.round(r.leftPct))==="u-crit"); applyCollapsed();
     el.classList.toggle("codex", u.name==="Codex");
     el.querySelector(".ulogo").textContent=u.logo||"✳";
@@ -5923,49 +5894,9 @@ class OverlordViewProvider {
       row.querySelector(".urpct b").textContent=left+"% ";
       row.querySelector(".urfill").style.width=left+"%";
       rows.appendChild(row);
-      // "Today" bar sits directly under the Weekly row (patch 97: the 5-hour row it
-      // used to hang off no longer exists on this plan). Fill = today's share of the
-      // weekly limit against today's budget; full (red) = over budget.
-      if(r.kind==="weekly_all" && u.today && typeof u.today.pacePct==="number"){
-        const pp=Math.max(0,Math.round(u.today.pacePct));
-        const over=pp>100;
-        const t=document.createElement("div"); t.className="utoday"+(over?" utover":"");
-        t.innerHTML='<div class="utline"><span class="utlabel">Today</span><span class="utval"></span></div>'
-          +'<div class="utbar"><div class="utfill"></div></div>';
-        t.querySelector(".utval").textContent=(u.today.exhausted?"at weekly cap":Math.round(u.today.todayPct)+"% of "+Math.round(u.today.budgetPct)+"% budget")+(u.today.tokens?(" · "+fmtTok(u.today.tokens)):"");
-        t.querySelector(".utfill").style.width=Math.min(100,pp)+"%";
-        const f=u.today.forecast;
-        if(f){ const fc=document.createElement("div"); fc.className="utfc"+(f.state==="over"?" over":"");
-          fc.textContent=f.state==="over"
-            ?"At this pace you run out "+new Date(f.runsOutMs).toLocaleString(undefined,{weekday:"short",hour:"numeric",minute:"2-digit"})
-            :"On pace for "+Math.round(f.projected)+"% at reset";
-          t.appendChild(fc); }
-        rows.appendChild(t);
-      }
     }
-    // Renewal bar (4th): next charge date, blue, fill = billing cycle remaining.
-    if(u.renew && u.renew.at){
-      const next=new Date(u.renew.at), msLeft=next.getTime()-Date.now();
-      if(!isNaN(next.getTime()) && msLeft>0){
-        const prev=u.renew.prevAt?new Date(u.renew.prevAt):null;
-        const cycle=(prev&&!isNaN(prev.getTime()))?(next.getTime()-prev.getTime()):0;
-        const remainFrac=cycle>0?Math.max(0,Math.min(1,msLeft/cycle)):0;
-        const daysLeft=Math.ceil(msLeft/86400000);
-        const mon=next.toLocaleString(undefined,{month:"short"});
-        const dateTxt="Renews "+mon+" "+next.getDate()
-          +(next.getFullYear()!==new Date().getFullYear()?", "+next.getFullYear():"");
-        const rw=document.createElement("div"); rw.className="urow renew";
-        rw.innerHTML='<div class="urline"><span class="urlabel">Plan</span>'
-          +'<span class="urreset"></span><span class="urpct"><b></b>left</span></div>'
-          +'<div class="urbar"><div class="urfill"></div></div>';
-        rw.querySelector(".urreset").textContent=dateTxt;
-        rw.querySelector(".urpct b").textContent=daysLeft+"d ";
-        rw.querySelector(".urfill").style.width=Math.round(remainFrac*100)+"%";
-        rows.appendChild(rw);
-      }
-    }
-    // #5 folded summary: a colour-filled pill for EVERY stat — 5h · Today · wk ·
-    // Fable · Plan, matching the expanded order and colours.
+    // #5 folded summary: a colour-filled pill for EVERY limit window, matching the
+    // expanded order and colours.
     const usum=document.getElementById("usum");
     if(usum){
       usum.innerHTML="";
@@ -5976,13 +5907,7 @@ class OverlordViewProvider {
         const g=uTier(left);
         const lbl=r.group==="session"?"5h":(/\\((.*)\\)/.test(r.label)?r.label.replace(/^.*\\((.*)\\)$/,"$1"):"wk");
         pill(g, lbl+" "+left+"%");
-        if(r.kind==="weekly_all" && u.today && typeof u.today.pacePct==="number"){
-          const pp=Math.round(u.today.pacePct);
-          pill(pp>100?"u-crit":"g-today",u.today.exhausted?"Today cap":"Today "+pp+"%");
-        }
       }
-      if(u.renew && u.renew.at){ const ms=new Date(u.renew.at).getTime()-Date.now();
-        if(!isNaN(ms)&&ms>0) pill("g-renew","Plan "+Math.ceil(ms/86400000)+"d"); }
     }
     paintMem();
     paintAge();
@@ -5997,7 +5922,6 @@ class OverlordViewProvider {
       const a=m.activeSid||null;
       if(a!==hostSid){ hostSid=a; followSid=a; }
       selectedSid=a;
-      if(m.usage) usageBy.claude=m.usage;
       if(m.codexUsage) usageBy.codex=m.codexUsage;
       lastErr=m.error||null; lastErrCmd=m.errorCmd||"";
       if(Array.isArray(m.pinned)) pinnedSids=new Set(m.pinned);
@@ -6027,316 +5951,14 @@ class OverlordViewProvider {
   }
 }
 
-// ---- usage card: real plan limits from Claude's own /usage endpoint ----------
-// The board's footer mirrors Claude Code's /usage card. Claude doesn't cache the
-// limits to disk, so we call the same OAuth endpoint the CLI uses, reusing the
-// access token Claude Code keeps fresh in ~/.claude/.credentials.json. Read-only,
-// your own account, throttled to a few minutes. The `limits[]` array is the
-// curated per-window list (5-hour session, weekly-all, weekly-scoped per model),
-// each carrying a used `percent` and `resets_at`.
+// OAuth token for the direct Messages API helpers above: the access token Claude
+// Code keeps fresh in ~/.claude/.credentials.json.
 const https = require("https");
 const CREDS_PATH = path.join(os.homedir(), ".claude", ".credentials.json");
 
 function readOauth() {
   try { return JSON.parse(fs.readFileSync(CREDS_PATH, "utf8")).claudeAiOauth || null; }
   catch (_) { return null; }
-}
-
-// Today's usage has no dedicated API window, so we sum it (and this week's) from
-// the transcripts — input+cache-creation+output, cache-read excluded. Only used to
-// derive today's SHARE of the week, which we then scale by the real weekly % from
-// the API. Reads only files touched this week; regex, no JSON.parse (files hit 30MB).
-const PROJECTS_DIR = path.join(os.homedir(), ".claude", "projects");
-function dayStart(ms) { const d = new Date(ms); d.setHours(0, 0, 0, 0); return d.getTime(); }
-function lineTok(line) {
-  const i = line.match(/"input_tokens":(\d+)/);
-  const c = line.match(/"cache_creation_input_tokens":(\d+)/);
-  const o = line.match(/"output_tokens":(\d+)/);
-  return (i ? +i[1] : 0) + (c ? +c[1] : 0) + (o ? +o[1] : 0);
-}
-// `cycleStartMs` = the real quota-week boundary (weekly row's resetsAt minus 7d),
-// NOT local Monday — the two rarely coincide (the user's resets Wed 6pm), and summing
-// from the wrong start pulls in tokens from the PREVIOUS cycle, wrecking any ratio
-// built on top of this.
-// Patch 89: this used to read every transcript touched this quota week in full on each
-// fetch -- 1.84 GB (2026-10-09), split and regex-scanned on the extension host, where
-// one 142 MB file blocked it for 1-2 s. Now each file keeps its sums on disk: unchanged
-// -> no read; grown in place (the bytes before the old end still match) -> only the new
-// bytes; anything else -> from 0. Reads go in 1 MB chunks, so the host gets its loop
-// back between them. Sums are kept per local day, so midnight needs no re-read; lines
-// within an hour of the week boundary are kept one by one, because resets_at drifts
-// per fetch (15:59:59.709 vs 16:00:00.402, measured) and each line must land on the
-// same side of it as when the whole file was read. Tied to the parser's source and the
-// timezone, like codex.js's cache; a missing or corrupt file is just a full scan.
-const USAGE_CACHE = path.join(os.homedir(), ".claude", "overlord-usage-cache.json");
-const USAGE_NEAR_MS = 3600000;
-let usageDisk = null;
-function usageLine(line, acc, lo, hi) {
-  if (line.indexOf('"usage"') === -1) return;
-  const tm = line.match(/"timestamp":"([^"]+)"/);
-  const t = tm ? Date.parse(tm[1]) : 0;
-  if (!t || t < lo) return;
-  const tok = lineTok(line);
-  if (!tok) return;
-  if (t < hi) acc.near.push([t, tok]);
-  else { const k = dayStart(t); acc.days[k] = (acc.days[k] || 0) + tok; }
-}
-// One file's entry, brought up to date. `tail` gets the unterminated last line: the full
-// read counted it too, but it may still be being written, so it is never committed.
-async function usageScanFile(fp, st, e, tail, lo, hi) {
-  if (e && e.size === st.size && e.mtimeMs === st.mtimeMs && e.off === st.size) return e;
-  const fh = await fs.promises.open(fp, "r");
-  try {
-    if (e && !(e.size === st.size && e.mtimeMs === st.mtimeMs)) {
-      const n = Math.min(64, e.off), b = Buffer.alloc(n);
-      if (st.size < e.off || (await fh.read(b, 0, n, e.off - n)).bytesRead !== n || b.toString("base64") !== e.tail) e = null;
-    }
-    if (!e) e = { off: 0, tail: "", days: {}, near: [] };
-    const buf = Buffer.allocUnsafe(1 << 20);
-    let pos = e.off, done = e.off, pend = [];
-    while (pos < st.size) {
-      const { bytesRead } = await fh.read(buf, 0, Math.min(buf.length, st.size - pos), pos);
-      if (!bytesRead) break;
-      const chunk = buf.subarray(0, bytesRead), nl = chunk.lastIndexOf(10);
-      pos += bytesRead;
-      if (nl === -1) { pend.push(Buffer.from(chunk)); continue; }
-      pend.push(chunk.subarray(0, nl));
-      for (const line of Buffer.concat(pend).toString("utf8").split("\n")) usageLine(line, e, lo, hi);
-      pend = [Buffer.from(chunk.subarray(nl + 1))];
-      done = pos - bytesRead + nl + 1;
-    }
-    usageLine(Buffer.concat(pend).toString("utf8"), tail, lo, hi);
-    if (done !== e.off) {
-      const n = Math.min(64, done), b = Buffer.alloc(n);
-      await fh.read(b, 0, n, done - n);
-      e.tail = b.toString("base64");
-    }
-    e.off = done; e.size = st.size; e.mtimeMs = st.mtimeMs;
-    return e;
-  } finally { await fh.close(); }
-}
-const USAGE_V = require("crypto").createHash("sha1").update(String(lineTok) + String(usageLine) +
-  String(usageScanFile) + String(dayStart) + Intl.DateTimeFormat().resolvedOptions().timeZone).digest("hex");
-async function sumTodayWeek(cycleStartMs) {
-  const wk = cycleStartMs, dy = dayStart(Date.now());
-  let today = 0, week = 0;
-  if (!usageDisk) {
-    try { usageDisk = JSON.parse(await fs.promises.readFile(USAGE_CACHE, "utf8")); } catch (_) {}
-    if (!usageDisk || usageDisk.v !== USAGE_V) usageDisk = { v: USAGE_V, lo: 0, hi: 0, files: {} };
-  }
-  if (wk < usageDisk.lo || wk >= usageDisk.hi)
-    usageDisk = { v: USAGE_V, lo: wk - USAGE_NEAR_MS, hi: wk + USAGE_NEAR_MS, files: {} };
-  const { lo, hi } = usageDisk, files = {};
-  let dirs; try { dirs = await fs.promises.readdir(PROJECTS_DIR); } catch (_) { return { today, week }; }
-  for (const d of dirs) {
-    const pd = path.join(PROJECTS_DIR, d);
-    let names; try { names = await fs.promises.readdir(pd); } catch (_) { continue; }
-    for (const f of names) {
-      if (!f.endsWith(".jsonl")) continue;
-      const fp = path.join(pd, f);
-      let st; try { st = await fs.promises.stat(fp); } catch (_) { continue; }
-      if (st.mtimeMs < wk) continue;                 // whole file predates this week
-      const tail = { days: {}, near: [] };
-      let e; try { e = await usageScanFile(fp, st, usageDisk.files[fp], tail, lo, hi); } catch (_) { continue; }
-      files[fp] = e;
-      for (const a of [e, tail]) {
-        for (const k in a.days) { week += a.days[k]; if (+k >= dy) today += a.days[k]; }
-        for (const [t, n] of a.near) if (t >= wk) { week += n; if (t >= dy) today += n; }
-      }
-    }
-  }
-  usageDisk.files = files;
-  const tmp = USAGE_CACHE + "." + process.pid;
-  try { await fs.promises.writeFile(tmp, JSON.stringify(usageDisk)); await fs.promises.rename(tmp, USAGE_CACHE); } catch (_) {}
-  return { today, week };
-}
-
-function fetchUsage() {
-  return new Promise((resolve) => {
-    const oa = readOauth();
-    if (!oa || !oa.accessToken) return resolve(null);
-    const req = https.request({
-      host: "api.anthropic.com", path: "/api/oauth/usage", method: "GET", timeout: 8000,
-      headers: {
-        "Authorization": "Bearer " + oa.accessToken,
-        "anthropic-beta": "oauth-2025-04-20",
-        "Content-Type": "application/json",
-        "User-Agent": "overlord",
-      },
-    }, (res) => {
-      let b = ""; res.on("data", (d) => b += d);
-      res.on("end", () => {
-        if (res.statusCode !== 200) return resolve(null);   // 401 (stale token) etc -> keep last good
-        try { resolve(JSON.parse(b)); } catch (_) { resolve(null); }
-      });
-    });
-    req.on("error", () => resolve(null));
-    req.on("timeout", () => { req.destroy(); resolve(null); });
-    req.end();
-  });
-}
-
-// Billing has no API window (no renews_at anywhere), so we read the plan's
-// subscription_created_at from /profile and project the next charge forward on a
-// monthly cadence. Settings can override the interval or pin an exact date.
-function fetchProfile() {
-  return new Promise((resolve) => {
-    const oa = readOauth();
-    if (!oa || !oa.accessToken) return resolve(null);
-    const req = https.request({
-      host: "api.anthropic.com", path: "/api/oauth/profile", method: "GET", timeout: 8000,
-      headers: {
-        "Authorization": "Bearer " + oa.accessToken,
-        "anthropic-beta": "oauth-2025-04-20",
-        "Content-Type": "application/json", "User-Agent": "overlord",
-      },
-    }, (res) => {
-      let b = ""; res.on("data", (d) => b += d);
-      res.on("end", () => { if (res.statusCode !== 200) return resolve(null);
-        try { resolve(JSON.parse(b)); } catch (_) { resolve(null); } });
-    });
-    req.on("error", () => resolve(null));
-    req.on("timeout", () => { req.destroy(); resolve(null); });
-    req.end();
-  });
-}
-
-// Next charge date + the cycle it closes. `createdIso` = subscription_created_at;
-// `months` = billing interval (1 monthly, 12 annual); `overrideIso` pins it.
-function computeRenew(createdIso, months, overrideIso) {
-  const iv = Math.max(1, months || 1);
-  let next, prev;
-  if (overrideIso) {
-    next = new Date(overrideIso); if (isNaN(next.getTime())) return null;
-    prev = new Date(next); prev.setMonth(prev.getMonth() - iv);
-  } else {
-    if (!createdIso) return null;
-    const c = new Date(createdIso); if (isNaN(c.getTime())) return null;
-    const now = Date.now();
-    next = new Date(c);
-    while (next.getTime() <= now) next.setMonth(next.getMonth() + iv);
-    prev = new Date(next); prev.setMonth(prev.getMonth() - iv);
-  }
-  return { at: next.toISOString(), prevAt: prev.toISOString() };
-}
-
-// Full plan name for the card header. rateLimitTier carries the tier
-// ("default_claude_max_20x" -> "Max 20x"); fall back to subscriptionType.
-function planLabel(oa) {
-  const tier = (oa && oa.rateLimitTier) || "";
-  const m = tier.match(/max_(\d+)x/i);
-  if (m) return "Max " + m[1] + "x";
-  const sub = (oa && oa.subscriptionType) || "";
-  if (/max/i.test(sub)) return "Max";
-  return sub ? sub.charAt(0).toUpperCase() + sub.slice(1) : "";   // Pro / Free / Team…
-}
-
-// One limit record -> a display row. Label mirrors the /usage card.
-function usageLabel(l) {
-  if (l.kind === "weekly_scoped" && l.scope && l.scope.model && l.scope.model.display_name)
-    return "Weekly (" + l.scope.model.display_name + ")";
-  if (l.group === "session" || l.kind === "session") return "5-hour";
-  if (l.group === "weekly" || l.kind === "weekly_all") return "Weekly";
-  return l.kind || "Limit";
-}
-
-// Patch 97: the server's weekly % is the only exact number there is, and each fetch used to
-// throw it away. Kept here so "today" can be a real difference between two readings.
-const USAGE_HISTORY = path.join(os.homedir(), ".claude", "overlord-usage-history.jsonl");
-const USAGE_PACE = path.join(os.homedir(), ".claude", "overlord-usage-pace.json");
-function usageReadings(now, pct, reset) {
-  let rows = [];
-  try {
-    for (const l of fs.readFileSync(USAGE_HISTORY, "utf8").split("\n")) {
-      try { if (l) rows.push(JSON.parse(l)); } catch (_) { /* a torn line costs one reading */ }
-    }
-  } catch (_) { /* first run */ }
-  const last = rows[rows.length - 1];
-  if (!last || last.pct !== pct || now - last.at >= 3600000) {
-    try { fs.appendFileSync(USAGE_HISTORY, JSON.stringify({ at: now, pct, reset }) + "\n"); } catch (_) {}
-  }
-  return rows;
-}
-// One toast per weekly window. The state file also feeds the prompt hook.
-function paceAlert(pace, usedPct, resetMs, now) {
-  const f = pace.forecast, key = Math.round(resetMs / 3600000);
-  let prev = {};
-  try { prev = JSON.parse(fs.readFileSync(USAGE_PACE, "utf8")); } catch (_) {}
-  const over = !!(f && f.state === "over");
-  if (over && prev.alerted !== key) {
-    const fmt = (ms) => new Date(ms).toLocaleString("en-GB", { weekday: "short", hour: "2-digit", minute: "2-digit" });
-    osToast("pace", "At this pace you run out " + fmt(f.runsOutMs) + ". Resets " + fmt(resetMs) + ".");
-  }
-  try {
-    fs.writeFileSync(USAGE_PACE, JSON.stringify({ at: now, usedPct, state: f ? f.state : "",
-      projected: f ? f.projected : null, runsOutMs: f ? f.runsOutMs : null, resetMs,
-      alerted: over ? key : prev.alerted }));
-  } catch (_) {}
-}
-
-async function maybeUpdateUsage() {
-  const now = Date.now();
-  const throttle = Math.max(60000, (cfg().get("usage.refreshSeconds") || 180) * 1000);
-  if (usageBusy || (usageAt && now - usageAt < throttle)) return;
-  usageBusy = true;     // patch 89: one at a time, throttle stamped when it ends
-  try {
-    const data = await fetchUsage();
-    if (!data) return;                                  // unreachable/stale -> keep last good card
-    const src = Array.isArray(data.limits) ? data.limits : [];
-    const rows = src
-      .filter((l) => l && typeof l.percent === "number")
-      .map((l) => ({
-        label: usageLabel(l),
-        kind: l.kind || "",
-        leftPct: Math.max(0, Math.min(100, 100 - l.percent)),
-        severity: l.severity || "normal",
-        resetsAt: l.resets_at || null,
-        group: l.group || l.kind || "",
-      }));
-    if (!rows.length) return;
-
-    // #2 Low-limit attention: alert level from the worst-off window.
-    const warnBelow = Math.max(1, cfg().get("usage.warnBelowPercent") || 15);
-    const minLeft = Math.min.apply(null, rows.map((r) => r.leftPct));
-    const alert = minLeft < warnBelow ? "crit" : minLeft < warnBelow * 2 ? "warn" : "";
-
-    // Today bar: today's spend vs a SUSTAINABLE DAILY PACE for the rest of this
-    // quota cycle — "at today's rate, do I run out before reset?" — rather than
-    // the old "today's slice of the whole week", which was ~always near-zero by
-    // construction (two small fractions multiplied) and didn't say anything
-    // about whether today was heavy or light. A lighter companion under the
-    // Weekly bar.
-    let today = null;
-    const wRow = rows.find((r) => r.kind === "weekly_all");
-    if (wRow && wRow.resetsAt) {
-      const resetMs = Date.parse(wRow.resetsAt);
-      if (!isNaN(resetMs)) {
-        const cycleStart = resetMs - 7 * 86400000;       // weekly cadence, confirmed by patch 13a
-        const tw = await sumTodayWeek(cycleStart);
-        const usedPct = 100 - wRow.leftPct;               // weekly quota consumed so far this cycle
-        const todayPct = tw.week > 0 ? usedPct * (tw.today / tw.week) : 0;  // today's slice, weekly-quota scale
-        const pace = A.weeklyPace({ usedPct, resetMs, nowMs: now, dayStartMs: dayStart(now),
-          readings: usageReadings(now, usedPct, resetMs), proxyTodayPct: todayPct });
-        today = Object.assign({ tokens: tw.today, exhausted: wRow.leftPct <= 0 }, pace);
-        paceAlert(pace, usedPct, resetMs, now);
-      }
-    }
-
-    // Renewal bar: next charge date, projected from subscription_created_at
-    // (fetched once from /profile) on the configured monthly cadence.
-    if (subCreatedAt === null) {
-      const prof = await fetchProfile();
-      if (prof) subCreatedAt = (prof.organization && prof.organization.subscription_created_at) || "";
-    }
-    const renew = computeRenew(subCreatedAt || "",
-      cfg().get("usage.billingIntervalMonths") || 1,
-      cfg().get("usage.renewsAt") || "");
-
-    const oa = readOauth();
-    usageStat = { plan: planLabel(oa), rows, at: now, alert, today, renew };
-    if (provider) provider.post(buildSessions(_agentCache, Date.now(), _metaCache));
-  } catch (_) { /* usage is additive — never break the poll */ }
-  finally { usageBusy = false; usageAt = Date.now(); }
 }
 
 // Codex's plan meter (patch 84), in the Claude card's shape. Its rate limits ride on

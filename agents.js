@@ -556,29 +556,4 @@ function shouldUnpark(status, isParked, handedOff, handoffAtMs, lastPromptAtMs, 
   return !!handoffAtMs && !!lastPromptAtMs && lastPromptAtMs > handoffAtMs;
 }
 
-// Patch 97: the weekly limit is now the only one, so pace against it. Today = the server's
-// weekly % now minus its last reading before midnight (token share only until a reading
-// exists). Budget = what is left above a 10% reserve, split over the days to reset. Forecast =
-// week-average rate, held back for 48h: it warned by day 2 in all 3 limit weeks since September.
-function weeklyPace({ usedPct, resetMs, nowMs, dayStartMs, readings, proxyTodayPct }) {
-  const H = 3600000, windowStart = resetMs - 7 * 24 * H;
-  const before = (readings || []).filter((r) => Math.abs(r.reset - resetMs) < H && r.at < dayStartMs);
-  const startPct = windowStart >= dayStartMs ? 0
-    : before.length ? before[before.length - 1].pct
-    : Math.max(0, usedPct - (proxyTodayPct || 0));
-  const todayPct = Math.max(0, usedPct - startPct);
-  const daysLeft = Math.max((resetMs - Math.max(dayStartMs, windowStart)) / (24 * H), 1 / 24);
-  const budgetPct = Math.max(0, 100 - 10 - startPct) / daysLeft;
-  const pacePct = budgetPct > 0 ? (todayPct / budgetPct) * 100 : (todayPct > 0 ? 999 : 0);
-  const elapsedH = (nowMs - windowStart) / H;
-  let forecast = null;
-  if (elapsedH >= 48) {
-    const rate = usedPct / elapsedH;
-    const projected = usedPct + rate * Math.max(0, (resetMs - nowMs) / H);
-    forecast = { projected, state: projected >= 100 ? "over" : projected >= 90 ? "tight" : "ok",
-      runsOutMs: projected >= 100 && rate > 0 ? nowMs + ((100 - usedPct) / rate) * H : null };
-  }
-  return { todayPct, budgetPct, pacePct, forecast };
-}
-
-module.exports = { weeklyPace, shouldUnpark, HANDOFF_SEP, threadOf, handoffName, HANDOFF_OFFER_PCT, offerHandoff, COLOR, LABEL, ORDER, JUMP_LABEL, folderName, parseAgents, toSession, maskFinishedTurns, lastAssistantText, isUserQuestion, asksApproval, asksDirectiveQuestion, handsBackItem, isTurnFinal, explain, awaitVerdict, awaitReason, awaitsUser, shortModel, fmtTokens, fmtDuration, ctxPct, jumpLabel, metaLine, runBadge };
+module.exports = { shouldUnpark, HANDOFF_SEP, threadOf, handoffName, HANDOFF_OFFER_PCT, offerHandoff, COLOR, LABEL, ORDER, JUMP_LABEL, folderName, parseAgents, toSession, maskFinishedTurns, lastAssistantText, isUserQuestion, asksApproval, asksDirectiveQuestion, handsBackItem, isTurnFinal, explain, awaitVerdict, awaitReason, awaitsUser, shortModel, fmtTokens, fmtDuration, ctxPct, jumpLabel, metaLine, runBadge };

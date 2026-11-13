@@ -8,7 +8,7 @@ About 100 changes on top of 2.1.8. Highlights:
 - Codex sessions on the same board.
 - Needs you / Working / Done tabs, park and un-park, rename that follows a session across handoffs, separate caps for Claude and Codex cards.
 - Concept search and topic icons via short Haiku calls (Python helpers in `python/`).
-- Plan usage bar and machine memory bar.
+- Codex plan usage bar and machine memory bar.
 - Click a card to focus its terminal; send text to a session.
 - Optional Hand off button and loop / task-list badges driven by your own hook files (`OVERLORD_WORKSPACE`).
 - OS toast notifications.
