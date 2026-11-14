@@ -103,6 +103,12 @@
           "default": "claude",
           "description": "Command used to run the Claude Code CLI. Leave as 'claude' if it's on your PATH, or set the full path to the binary."
         },
+        "overlord.useClaudeCodeLogin": {
+          "type": "boolean",
+          "default": false,
+          "scope": "application",
+          "description": "Faster: reuse Claude Code's saved login for the small model calls. Off by default; may conflict with Anthropic's consumer terms."
+        },
         "overlord.pollMs": {
           "type": "number",
           "default": 2500,
@@ -167,7 +173,7 @@
         "overlord.judgeModel": {
           "type": "string",
           "default": "claude-haiku-4-5-20251001",
-          "description": "Model used to judge whether a finished session is waiting on you. Called directly over your existing Claude Code login (~1-4s); the `claude -p` CLI is only the fallback, and it takes 35s+ because it ships its whole system prompt and tool schemas for what is a one-line classification."
+          "description": "Model used to judge whether a finished session is waiting on you. Used when `overlord.useClaudeCodeLogin` is on: called directly over your Claude Code login (~1-4s). Otherwise the judge runs through the `claude -p` CLI (Haiku), which takes 35s+ because it ships its whole system prompt and tool schemas for what is a one-line classification."
         },
         "overlord.simplifyModel": {
           "type": "string",

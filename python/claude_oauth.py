@@ -6,10 +6,12 @@ has), not on API credits, and go only to api.anthropic.com. This module is the o
 place the helpers talk to a model.
 
 Two transports, in the order extension.js uses for its own judge calls:
-  1. OAuth — the token Claude Code keeps fresh in ~/.claude/.credentials.json, posted
-     to /v1/messages with the oauth beta header. Sub-second, and the fast path.
-  2. `claude -p` — slower (the CLI boots first, ~5s), but it does its own auth, so it
-     still answers when the cached token has gone stale and nothing has refreshed it.
+  1. OAuth — opt-in only: used when OVERLORD_USE_CLAUDE_LOGIN=1, which extension.js
+     sets only while `overlord.useClaudeCodeLogin` is on. The token Claude Code keeps
+     fresh in ~/.claude/.credentials.json, posted to /v1/messages with the oauth beta
+     header. Sub-second.
+  2. `claude -p` — the default, and the fallback. Slower (the CLI boots first, ~5s),
+     but it does its own auth.
 
 Fail-open: every failure returns None and the caller keeps its non-model answer.
 """
@@ -95,8 +97,9 @@ def ask(model: str, system: str, user: str, max_tokens: int = 800,
     per-transport budget would let two attempts overrun a window one call must fit.
     """
     started = time.monotonic()
-    text = _via_oauth(model, system, user, max_tokens, timeout)
-    if text.strip():
-        return text
+    if os.environ.get("OVERLORD_USE_CLAUDE_LOGIN") == "1":   # opt-in; off = CLI only
+        text = _via_oauth(model, system, user, max_tokens, timeout)
+        if text.strip():
+            return text
     left = timeout - (time.monotonic() - started)
     return _via_cli(cli_model, system, user, left) if left > 3.0 else ""

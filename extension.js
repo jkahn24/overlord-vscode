@@ -60,7 +60,7 @@ function runSessionSearch(q, webview) {
   };
   let child;
   try {
-    child = cp.execFile(SEARCH_PY, [SEARCH_HELPER], { timeout: 22000, maxBuffer: 1 << 20 },
+    child = cp.execFile(SEARCH_PY, [SEARCH_HELPER], { timeout: 22000, maxBuffer: 1 << 20, env: helperEnv() },
       (err, stdout) => {
         if (err) return finish(null);
         let ranked = null;
@@ -88,7 +88,7 @@ function runTopicEmoji(names) {
   let child;
   const done = () => { _emojiInFlight = false; };
   try {
-    child = cp.execFile(SEARCH_PY, [TOPIC_EMOJI_HELPER], { timeout: 30000, maxBuffer: 1 << 20 },
+    child = cp.execFile(SEARCH_PY, [TOPIC_EMOJI_HELPER], { timeout: 30000, maxBuffer: 1 << 20, env: helperEnv() },
       (err, stdout) => {
         done();
         if (err) return;
@@ -164,6 +164,16 @@ let activeAgent = "claude";     // which half of the board toggle is showing; th
 let activeSid = null;           // sid whose terminal is currently focused (selected card)
 
 function cfg() { return vscode.workspace.getConfiguration("overlord"); }
+// Opt-in (overlord.useClaudeCodeLogin, off by default): reuse Claude Code's saved
+// login for direct model calls. Off = every model call goes through the `claude` CLI.
+function useLogin() { return cfg().get("useClaudeCodeLogin") === true; }
+// Env for the Python helpers: claude_oauth.py reuses the login only when this says so.
+function helperEnv() {
+  const env = Object.assign({}, process.env);
+  delete env.OVERLORD_USE_CLAUDE_LOGIN;
+  if (useLogin()) env.OVERLORD_USE_CLAUDE_LOGIN = "1";
+  return env;
+}
 
 // ---- data: `claude agents --json` ------------------------------------------
 // The exact command the board polls; the error state shows it (patch 86).
@@ -3006,6 +3016,7 @@ function judgePrompt(text) {
 const noEffort = new Set(["claude-haiku-4-5-20251001"]);
 
 function apiCall(model, prompt, maxTokens, cb, opts) {
+  if (!useLogin()) return cb(null);                // opt-in only: never read the login
   const oa = readOauth();                          // re-read every call: Claude Code
   if (!oa || !oa.accessToken) return cb(null);     // refreshes this file in place
   const payload = {
@@ -3068,13 +3079,14 @@ function judgeViaApi(prompt, cb) {
 
 // Fallback transport: slow (see the table above) but it does its own auth, so it
 // still works when the cached OAuth token has expired and nothing has refreshed it.
-function judgeViaCli(prompt, cb) {
+function judgeViaCli(prompt, cb, model) {
   const bin = cfg().get("claudePath") || "claude";
   // ⛔ Strip the API key: it is a persistent User env var on this machine, and a
   // child that inherits it bills API credits instead of the Max subscription.
   const env = Object.assign({}, process.env);
   delete env.ANTHROPIC_API_KEY; delete env.ANTHROPIC_AUTH_TOKEN;
-  const child = cp.exec(`"${bin}" -p --model haiku`,
+  const m = /^[\w.\-[\]]+$/.test(model || "") ? model : "haiku";   // settings value -> shell
+  const child = cp.exec(`"${bin}" -p --model "${m}"`,
     { timeout: 90000, windowsHide: true, maxBuffer: 1024 * 1024, env },
     (err, stdout) => cb(err ? null : String(stdout)));
   try { child.stdin.write(prompt); child.stdin.end(); } catch (_) { cb(null); }
@@ -3089,6 +3101,7 @@ function judgeAndAsk(sid, m, judgeToo) {
   const c = askCache.get(sid);
   if (c && c.key === key) return;                    // already generated / generating
   if (apiInFlight + cliInFlight >= 4) return;        // cap concurrency; retry next tick
+  if (!useLogin() && cliInFlight >= 2) return;       // CLI-only: wait for a spawn slot
   askCache.set(sid, { key, pending: true, ask: null, buttons: null });
 
   // FAIL-SAFE throughout: a failed call, a timeout or a malformed reply leaves the
@@ -3369,7 +3382,12 @@ function runAssist(sid, kind, msgKey, webview) {
   const opts = isSimplify
     ? { outputConfig: { effort: "low", format: { type: "json_schema", schema: SIMPLIFY_SCHEMA } } }
     : { outputConfig: { effort: "low", format: { type: "json_schema", schema: NEXT_STEP_SCHEMA } } };
-  apiCall(model, isSimplify ? simplifyPrompt(digest) : nextStepPrompt(digest),
+  // Login reuse off (the default): the `claude` CLI answers instead. It cannot enforce
+  // the schema, so the schema is asked for in the prompt and the parsers below still apply.
+  const run = useLogin() ? apiCall : (m, p, _n, cb, o) => judgeViaCli(p +
+    "\n\nReply with ONLY a JSON object matching this JSON Schema, no prose, no code fences:\n" +
+    JSON.stringify(o.outputConfig.format.schema), cb, m);
+  run(model, isSimplify ? simplifyPrompt(digest) : nextStepPrompt(digest),
     isSimplify ? 1400 : 2500, (raw) => {
       assistInFlight--;
       entry.pending = false;

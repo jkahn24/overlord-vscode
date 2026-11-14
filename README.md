@@ -68,22 +68,26 @@ Two environment variables are optional:
 
 ## Privacy
 
-Overlord reads Claude Code's local files (session transcripts and the login in
-`~/.claude/.credentials.json`) on your machine. It uses that login only to call
-Anthropic's Messages API at `api.anthropic.com`, for short Haiku calls that
-judge whether a session needs you, summarise cards, rank search results and
-pick topic icons (these send card titles and recent session text to Anthropic).
-It does not read your plan usage, subscription or profile.
+Overlord reads Claude Code's local session transcripts on your machine. By
+default, its short model calls (judging whether a session needs you, summarising
+cards, ranking search results, picking topic icons) run through your own
+`claude` CLI, which signs in the normal way. These calls send card titles and
+recent session text to Anthropic. It does not read your plan usage, subscription
+or profile.
 
-The token is never sent to any other host.
+`overlord.useClaudeCodeLogin` is off by default. Turned on, it makes those calls
+faster by reusing Claude Code's saved login in `~/.claude/.credentials.json` to
+call Anthropic's Messages API at `api.anthropic.com` directly; the token is never
+sent to any other host. Reusing the login this way may conflict with Anthropic's
+consumer terms, which is why it stays off unless you turn it on.
 
-If the login can't be read, the helpers fall back to the `claude` CLI, and
-everything that needs a model simply turns off if neither works. You can turn
+If no model call works, everything that needs one simply turns off. You can turn
 the judge off with `overlord.judgeWithHaiku`.
 
 ## Tests
 
-`node test-transcript.js` and `node test-codex.js` are small assertion scripts.
+`node test-transcript.js`, `node test-codex.js` and `node test-login-optin.js` are
+small assertion scripts.
 
 ## License
 
